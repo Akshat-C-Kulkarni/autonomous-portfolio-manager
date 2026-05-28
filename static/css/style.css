@@ -8,12 +8,36 @@
 body {
     background: var(--bg);
     color: #e8ecf3;
+    font-family: 'Inter', system-ui, sans-serif;
 }
 
 .panel {
     background: var(--panel);
     border: 1px solid var(--line);
     border-radius: 12px;
+    border-top: 2px solid #2563eb;
+}
+
+#signalBadge {
+    transition: background-color 0.3s ease, color 0.3s ease;
+}
+
+.container-fluid {
+    padding-bottom: 2rem;
+}
+
+::-webkit-scrollbar {
+    width: 6px;
+    height: 6px;
+}
+
+::-webkit-scrollbar-track {
+    background: #0f1116;
+}
+
+::-webkit-scrollbar-thumb {
+    background: #2a3040;
+    border-radius: 3px;
 }
 
 .chip {

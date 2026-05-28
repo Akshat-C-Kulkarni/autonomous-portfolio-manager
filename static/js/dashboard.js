@@ -46,11 +46,44 @@ function getMode() {
     return el.modeFull?.checked ? "full" : "semi";
 }
 
+function updateEngineButtonVisibility() {
+    if (el.modeFull?.checked) {
+        if (el.startEngineBtn) {
+            el.startEngineBtn.disabled = false;
+            el.startEngineBtn.style.opacity = "1";
+        }
+        if (el.stopEngineBtn) {
+            el.stopEngineBtn.disabled = false;
+            el.stopEngineBtn.style.opacity = "1";
+        }
+        return;
+    }
+
+    if (el.startEngineBtn) {
+        el.startEngineBtn.disabled = true;
+        el.startEngineBtn.style.opacity = "0.4";
+    }
+    if (el.stopEngineBtn) {
+        el.stopEngineBtn.disabled = true;
+        el.stopEngineBtn.style.opacity = "0.4";
+    }
+    stopEngine();
+}
+
 let portfolioCash = 100000;
 
 function calcShares(price) {
     const budget = portfolioCash * 0.10;
     return Math.max(1, Math.floor(budget / price));
+}
+
+function showToast(message, type = 'info') {
+    const colors = { success: '#16a34a', error: '#dc2626', info: '#2563eb', warning: '#d97706' };
+    const toast = document.createElement('div');
+    toast.style.cssText = `background:#1e293b;color:#f1f5f9;padding:.65rem 1rem;border-radius:8px;border-left:3px solid ${colors[type]||colors.info};font-size:13px;max-width:300px;box-shadow:0 4px 12px rgba(0,0,0,.4);`;
+    toast.textContent = message;
+    document.getElementById('toastContainer')?.appendChild(toast);
+    setTimeout(() => toast.remove(), 4000);
 }
 
 function setSignalBadge(signal) {
@@ -304,7 +337,7 @@ async function loadStock(rawTicker) {
     const ticker = (rawTicker || "").trim().toUpperCase();
 
     if (!ticker) {
-        alert("Please enter a ticker.");
+        showToast("Please enter a ticker.", 'warning');
         return;
     }
 
@@ -326,7 +359,7 @@ async function loadStock(rawTicker) {
 
     } catch (error) {
         console.error(error);
-        alert(`Load stock failed: ${error.message}`);
+        showToast(`Load stock failed: ${error.message}`, 'error');
     } finally {
         el.loadStockBtn.disabled = false;
         el.loadStockBtn.textContent = 'Load Stock';
@@ -336,14 +369,14 @@ async function loadStock(rawTicker) {
 async function executeTradeFromPrediction() {
 
     if (!state.latestPrediction) {
-        alert("No prediction available.");
+        showToast("No prediction available.", 'info');
         return;
     }
 
     const p = state.latestPrediction;
 
     if (!["BUY", "SELL"].includes(p.signal)) {
-        alert("Current signal is HOLD. No trade executed.");
+        showToast("Current signal is HOLD. No trade executed.", 'info');
         return;
     }
 
@@ -361,11 +394,11 @@ async function executeTradeFromPrediction() {
 
         await refreshPortfolio();
 
-        alert(trade.message || "Trade executed successfully.");
+        showToast(trade.message || "Trade executed successfully.", 'success');
 
     } catch (error) {
         console.error(error);
-        alert(`Trade failed: ${error.message}`);
+        showToast(`Trade failed: ${error.message}`, 'error');
     } finally {
         el.approveBtn.disabled = false;
         el.approveBtn.textContent = 'Approve';
@@ -413,10 +446,9 @@ async function refreshPortfolio() {
 
         rows.forEach((tx) => {
 
-            const pnlValue =
-                tx.signal_type === "SELL"
-                    ? Number(tx.cash_impact || 0)
-                    : -Number(tx.cash_impact || 0);
+            const pnlCell = tx.signal_type === 'SELL'
+                ? `<td class="${Number(tx.cash_impact) >= 0 ? 'text-success' : 'text-danger'}">${fmtMoney(tx.cash_impact)}</td>`
+                : `<td class="text-muted">—</td>`;
 
             const tr = document.createElement("tr");
 
@@ -441,13 +473,7 @@ async function refreshPortfolio() {
 
                 <td>${Number(tx.shares).toFixed(2)}</td>
 
-                <td class="${
-                    pnlValue >= 0
-                        ? "text-success"
-                        : "text-danger"
-                }">
-                    ${fmtMoney(pnlValue)}
-                </td>
+                ${pnlCell}
             `;
 
             el.txTableBody.appendChild(tr);
@@ -625,8 +651,9 @@ function startEngine() {
     stopEngine();
 
     if (getMode() !== "full") {
-        alert(
-            "Switch to Fully Autonomous mode first."
+        showToast(
+            "Switch to Fully Autonomous mode first.",
+            'info'
         );
         return;
     }
@@ -685,6 +712,11 @@ el.startEngineBtn?.addEventListener(
     "click",
     startEngine
 );
+
+el.modeSemi?.addEventListener("change", updateEngineButtonVisibility);
+el.modeFull?.addEventListener("change", updateEngineButtonVisibility);
+
+updateEngineButtonVisibility();
 
 el.stopEngineBtn?.addEventListener(
     "click",
