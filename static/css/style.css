@@ -1,0 +1,61 @@
+:root {
+    --bg: #0f1116;
+    --panel: #171b23;
+    --muted: #8a93a5;
+    --line: #2a3040;
+}
+
+body {
+    background: var(--bg);
+    color: #e8ecf3;
+}
+
+.panel {
+    background: var(--panel);
+    border: 1px solid var(--line);
+    border-radius: 12px;
+}
+
+.chip {
+    background: #2a3040;
+    border-radius: 999px;
+    padding: 0.25rem 0.75rem;
+    font-size: 0.85rem;
+    display: inline-flex;
+    align-items: center;
+    gap: 0.5rem;
+}
+
+.chip button {
+    background: transparent;
+    border: 0;
+    color: #c7cfde;
+    padding: 0;
+    line-height: 1;
+}
+
+.stat-title {
+    color: var(--muted);
+    font-size: 0.85rem;
+}
+
+.stat-value {
+    font-size: 1.2rem;
+    font-weight: 700;
+}
+
+.table-dark {
+    --bs-table-bg: transparent;
+}
+
+.small-muted {
+    color: var(--muted);
+    font-size: 0.9rem;
+}
+
+.backtest-card {
+    background: #121824;
+    border: 1px solid var(--line);
+    border-radius: 10px;
+    padding: 1rem;
+}

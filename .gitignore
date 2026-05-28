@@ -1,0 +1,7 @@
+__pycache__/
+*.pyc
+.env
+models/*.h5
+models/*.pkl
+portfolio.db
+venv/
