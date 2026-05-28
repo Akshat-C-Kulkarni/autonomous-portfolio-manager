@@ -40,6 +40,9 @@
                     <span class="small-muted">Candlestick + SMA + Bollinger Bands</span>
                 </div>
                 <div id="chart" style="height: 500px;"></div>
+                <div id="chartPlaceholder" style="height:500px;display:flex;align-items:center;justify-content:center;color:#4b5563;font-size:14px;">
+                    Enter a ticker above and click Load Stock to view the chart
+                </div>
             </div>
         </div>
         <div class="col-lg-4">
@@ -97,7 +100,9 @@
                     <th>P&amp;L</th>
                 </tr>
                 </thead>
-                <tbody id="txTableBody"></tbody>
+                <tbody id="txTableBody">
+                    <tr id="emptyTxRow"><td colspan="6" style="text-align:center;color:#4b5563;padding:2rem;">No transactions yet</td></tr>
+                </tbody>
             </table>
         </div>
     </div>

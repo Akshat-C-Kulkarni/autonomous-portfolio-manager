@@ -220,6 +220,7 @@ function renderTickerChips() {
 function renderChart(data) {
     if (!data || !window.Plotly) return;
 
+    document.getElementById('chartPlaceholder').style.display = 'none';
     el.chartTitle.textContent = `${data.ticker} - Price Chart`;
 
     const traces = [
@@ -439,6 +440,10 @@ async function refreshPortfolio() {
             }`;
 
         el.txTableBody.innerHTML = "";
+
+        if ((data.transactions || []).length > 0) {
+            document.getElementById('emptyTxRow')?.remove();
+        }
 
         const rows = [...(data.transactions || [])]
             .reverse()
