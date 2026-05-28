@@ -18,19 +18,6 @@ logger = logging.getLogger(__name__)
 REQUIRED_OHLCV = ["Open", "High", "Low", "Close", "Volume"]
 
 
-def _flatten_yfinance_columns(df: pd.DataFrame) -> pd.DataFrame:
-    """Flatten yfinance MultiIndex columns (single ticker or multi-ticker cases)."""
-    if isinstance(df.columns, pd.MultiIndex):
-        # Last level typically contains field names like Open/High/Low/Close/Volume.
-        df = df.copy()
-        df.columns = df.columns.get_level_values(-1)
-
-        # Defensive dedupe: MultiIndex flattening can occasionally introduce duplicates.
-        if df.columns.duplicated().any():
-            df = df.loc[:, ~df.columns.duplicated()]
-    return df
-
-
 def _canonicalize_ohlcv_columns(df: pd.DataFrame) -> pd.DataFrame:
     # yfinance 1.4.0 returns a MultiIndex like (Price, Ticker)
     # Flatten it by keeping only the first level

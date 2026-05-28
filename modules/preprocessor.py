@@ -91,6 +91,9 @@ def prepare_data(
     target_values = aligned[["target_high", "target_low"]].to_numpy(dtype=float)
 
     scaler = load_scaler(ticker)
+    if hasattr(scaler, 'n_features_in_') and scaler.n_features_in_ != len(feature_cols):
+        scaler = None
+    
     if scaler is None:
         scaler = MinMaxScaler(feature_range=(0, 1))
         scaled_features = scaler.fit_transform(feature_values)

@@ -126,7 +126,7 @@ class Backtester:
             return 0.0
         running_peak = np.maximum.accumulate(values)
         drawdowns = (values - running_peak) / running_peak
-        return float(np.min(drawdowns) * 100.0)
+        return float(abs(np.min(drawdowns) * 100.0))
 
     def compute_win_rate(self, trades) -> float:
         """Compute % of profitable SELL trades."""

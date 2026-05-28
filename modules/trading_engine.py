@@ -12,6 +12,7 @@ class PaperTradingEngine:
     """Simple paper trading engine with persistent portfolio state."""
 
     def __init__(self, initial_cash: float = 100000, db_path: str = "portfolio.db") -> None:
+        self._initial_cash_config = float(initial_cash)
         self.initial_cash = float(initial_cash)
         self.cash = float(initial_cash)
         self.holdings: Dict[str, float] = {}
@@ -33,11 +34,7 @@ class PaperTradingEngine:
         if not rows:
             return
 
-        first = rows[0]
-        first_portfolio_value = float(first.get("portfolio_value", self.initial_cash))
-        first_cash_impact = float(first.get("cash_impact", 0.0))
-        # Infer starting cash from first recorded transaction.
-        self.initial_cash = first_portfolio_value - first_cash_impact
+        self.initial_cash = self._initial_cash_config
         self.cash = self.initial_cash
 
         self.holdings = {}
@@ -188,8 +185,7 @@ class PaperTradingEngine:
     def reset_portfolio(self) -> None:
         """Reset holdings/cash and clear transaction history from DB."""
         # Persist reset by clearing transaction log.
-        with self.db_manager._connect() as conn:
-            conn.execute("DELETE FROM transactions")
+        self.db_manager.delete_all_transactions()
 
         self.cash = float(self.initial_cash)
         self.holdings = {}

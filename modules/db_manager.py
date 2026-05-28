@@ -161,12 +161,14 @@ class DatabaseManager:
         """
         try:
             with self._connect() as conn:
-                rows = conn.execute(sql, (ticker,)).fetchall()
+                cursor = conn.execute(sql, (ticker,))
+                rows = cursor.fetchall()
+                columns = [col[0] for col in cursor.description]
+            
             if not rows:
                 return pd.DataFrame()
-            df = pd.DataFrame(rows, columns=[col[0] for col in conn.execute(sql, (ticker,)).description])
-            # Re-query through pandas for clean column names when rows exist
-            df = pd.DataFrame([dict(r) for r in rows])
+            
+            df = pd.DataFrame(rows, columns=columns)
             df["date"] = pd.to_datetime(df["date"])
             df.set_index("date", inplace=True)
             return df
@@ -282,6 +284,17 @@ class DatabaseManager:
             }
         except sqlite3.Error as exc:
             logger.error("get_portfolio_state failed: %s", exc)
+            raise
+
+    def delete_all_transactions(self) -> None:
+        """Delete all rows from the transactions table."""
+        sql = "DELETE FROM transactions"
+        try:
+            with self._connect() as conn:
+                conn.execute(sql)
+            logger.debug("All transactions deleted")
+        except sqlite3.Error as exc:
+            logger.error("delete_all_transactions failed: %s", exc)
             raise
 
 

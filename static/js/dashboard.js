@@ -2,7 +2,8 @@ const state = {
     loadedTickers: new Set(),
     activeTicker: null,
     latestPrediction: null,
-    engineInterval: null
+    engineInterval: null,
+    backtestButtons: new Map()  // Store button references by ticker
 };
 
 const el = {
@@ -43,6 +44,13 @@ function fmtPct(v) {
 
 function getMode() {
     return el.modeFull?.checked ? "full" : "semi";
+}
+
+let portfolioCash = 100000;
+
+function calcShares(price) {
+    const budget = portfolioCash * 0.10;
+    return Math.max(1, Math.floor(budget / price));
 }
 
 function setSignalBadge(signal) {
@@ -164,6 +172,9 @@ function renderTickerChips() {
         btBtn.type = "button";
         btBtn.className = "btn btn-sm btn-outline-info";
         btBtn.textContent = `Run Backtest ${ticker}`;
+
+        // Store button reference for use in runBacktest
+        state.backtestButtons.set(ticker, btBtn);
 
         btBtn.addEventListener("click", () => {
             runBacktest(ticker);
@@ -297,6 +308,9 @@ async function loadStock(rawTicker) {
         return;
     }
 
+    el.loadStockBtn.disabled = true;
+    el.loadStockBtn.innerHTML = '<span class="spinner-border spinner-border-sm me-1"></span>Loading...';
+
     try {
         const [pred, chart] = await Promise.all([
             apiGet(`/api/predict/${ticker}`),
@@ -313,6 +327,9 @@ async function loadStock(rawTicker) {
     } catch (error) {
         console.error(error);
         alert(`Load stock failed: ${error.message}`);
+    } finally {
+        el.loadStockBtn.disabled = false;
+        el.loadStockBtn.textContent = 'Load Stock';
     }
 }
 
@@ -330,13 +347,16 @@ async function executeTradeFromPrediction() {
         return;
     }
 
+    el.approveBtn.disabled = true;
+    el.approveBtn.innerHTML = '<span class="spinner-border spinner-border-sm me-1"></span>Executing...';
+
     try {
 
         const trade = await apiPost("/api/trade", {
             ticker: p.ticker,
             signal_type: p.signal,
             price: p.current_price,
-            shares: 1
+            shares: calcShares(p.current_price)
         });
 
         await refreshPortfolio();
@@ -346,6 +366,9 @@ async function executeTradeFromPrediction() {
     } catch (error) {
         console.error(error);
         alert(`Trade failed: ${error.message}`);
+    } finally {
+        el.approveBtn.disabled = false;
+        el.approveBtn.textContent = 'Approve';
     }
 }
 
@@ -354,6 +377,8 @@ async function refreshPortfolio() {
     try {
 
         const data = await apiGet("/api/portfolio");
+
+        portfolioCash = Number(data.cash) || 100000;
 
         el.cashBadge.textContent =
             `Cash: ${fmtMoney(data.cash)}`;
@@ -382,9 +407,9 @@ async function refreshPortfolio() {
 
         el.txTableBody.innerHTML = "";
 
-        const rows = (data.transactions || [])
-            .slice()
-            .reverse();
+        const rows = [...(data.transactions || [])]
+            .reverse()
+            .slice(0, 20);
 
         rows.forEach((tx) => {
 
@@ -459,7 +484,7 @@ async function autonomousTick() {
                 ticker: pred.ticker,
                 signal_type: pred.signal,
                 price: pred.current_price,
-                shares: 1
+                shares: calcShares(pred.current_price)
             });
 
             await refreshPortfolio();
@@ -520,7 +545,7 @@ function renderBacktestResult(res) {
                 </div>
 
                 <div>
-                    ${Number(res.max_drawdown).toFixed(2)}%
+                    -${Number(res.max_drawdown).toFixed(2)}%
                 </div>
             </div>
 
@@ -560,6 +585,12 @@ function renderBacktestResult(res) {
 
 async function runBacktest(ticker) {
 
+    const btBtn = state.backtestButtons.get(ticker);
+    if (btBtn) {
+        btBtn.disabled = true;
+        btBtn.innerHTML = '<span class="spinner-border spinner-border-sm me-1"></span>Running...';
+    }
+
     try {
 
         el.backtestResultsCard.innerHTML = `
@@ -581,6 +612,11 @@ async function runBacktest(ticker) {
                 Backtest failed: ${error.message}
             </div>
         `;
+    } finally {
+        if (btBtn) {
+            btBtn.disabled = false;
+            btBtn.textContent = `Run Backtest ${ticker}`;
+        }
     }
 }
 

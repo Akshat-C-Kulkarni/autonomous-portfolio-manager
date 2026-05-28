@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import os
 from typing import Any
 
@@ -25,9 +26,16 @@ app = Flask(__name__)
 app.config["ENV"] = os.getenv("FLASK_ENV", "production")
 app.config["DEBUG"] = os.getenv("DEBUG", "false").strip().lower() in {"1", "true", "yes", "on"}
 
+logger = logging.getLogger(__name__)
+
 db_manager = DatabaseManager("portfolio.db")
 db_manager.init_db()
 trading_engine = PaperTradingEngine(initial_cash=100000, db_path="portfolio.db")
+
+# Price cache
+_price_cache: dict[str, float] = {}
+_price_cache_time: dict[str, float] = {}
+PRICE_CACHE_TTL = 60  # seconds
 
 
 def _latest_price(ticker: str) -> float:
@@ -36,6 +44,34 @@ def _latest_price(ticker: str) -> float:
     if df.empty:
         raise ValueError(f"No recent price data for {ticker}")
     return float(df["Close"].iloc[-1])
+
+
+def get_cached_price(ticker: str) -> float | None:
+    """Get price for ticker with caching (TTL 60 seconds).
+    
+    Returns cached price if fresh, fetches new price otherwise.
+    On exception, returns last cached price if available, else None.
+    """
+    import time
+    
+    current_time = time.time()
+    
+    # Return cached price if still fresh
+    if ticker in _price_cache and ticker in _price_cache_time:
+        if current_time - _price_cache_time[ticker] < PRICE_CACHE_TTL:
+            return _price_cache[ticker]
+    
+    # Fetch new price
+    try:
+        price = _latest_price(ticker)
+        _price_cache[ticker] = price
+        _price_cache_time[ticker] = current_time
+        return price
+    except Exception:
+        # Return last cached price if available
+        if ticker in _price_cache:
+            return _price_cache[ticker]
+        return None
 
 
 def _json_error(message: str, status_code: int = 400):
@@ -108,6 +144,9 @@ def api_predict(ticker: str):
         raise ApiError("Not enough sequence data for prediction", 400)
 
     scaled = scaler.transform(latest_features.to_numpy(dtype=float))
+    if (scaled == 0.0).any() or (scaled == 1.0).any():
+        logger.warning("Scaler out-of-range values detected for %s — predictions may be degraded. Consider retraining.", ticker)
+    
     predicted_high, predicted_low = predict_next(model, scaled)
     current_price = float(feature_df["Close"].iloc[-1])
     signal_payload = generate_signal(
@@ -157,12 +196,17 @@ def api_indicators(ticker: str):
 def api_portfolio():
     """Return current paper portfolio state."""
     holdings = trading_engine.get_holdings()
+    
+    # Build fallback prices from transaction history (most recent first)
+    fallback_prices: dict[str, float] = {}
+    for tx in reversed(trading_engine.get_transaction_history()):
+        t = tx.get("ticker")
+        if t and t not in fallback_prices:
+            fallback_prices[t] = float(tx.get("price", 0))
+    
     current_prices: dict[str, float] = {}
     for ticker in holdings:
-        try:
-            current_prices[ticker] = _latest_price(ticker)
-        except Exception:
-            continue
+        current_prices[ticker] = get_cached_price(ticker) or fallback_prices.get(ticker, 0)
 
     total_value = trading_engine.get_portfolio_value(current_prices)
     pnl = trading_engine.get_pnl(current_prices)
@@ -280,6 +324,9 @@ def api_backtest(ticker: str):
     split_idx = int(len(seq_dates) * 0.8)
     test_dates = seq_dates[split_idx:]
     test_closes = seq_closes[split_idx:]
+
+    if len(x_test) != len(test_dates):
+        raise ApiError("Sequence length mismatch in backtest alignment", 500)
 
     pred_rows = []
     for i, seq in enumerate(x_test):
