@@ -8,7 +8,7 @@ from typing import Any
 
 import numpy as np
 import pandas as pd
-from flask import Flask, jsonify, render_template, request
+from flask import Flask, jsonify, render_template, request, send_from_directory
 from dotenv import load_dotenv
 
 from modules.data_collector import fetch_stock_data
@@ -36,6 +36,9 @@ trading_engine = PaperTradingEngine(initial_cash=100000, db_path="portfolio.db")
 _price_cache: dict[str, float] = {}
 _price_cache_time: dict[str, float] = {}
 PRICE_CACHE_TTL = 60  # seconds
+
+# Model cache to avoid reloading TensorFlow models repeatedly
+_model_cache: dict[str, Any] = {}
 
 
 def _latest_price(ticker: str) -> float:
@@ -124,11 +127,18 @@ def index():
     return render_template("index.html")
 
 
+@app.route('/favicon.ico')
+def favicon():
+    return '', 204
+
+
 @app.route("/api/predict/<ticker>", methods=["GET"])
 def api_predict(ticker: str):
     """Run inference for ticker and return predicted bounds with signal."""
     ticker = _validated_ticker(ticker)
-    model = load_model_for_ticker(ticker)
+    if ticker not in _model_cache:
+        _model_cache[ticker] = load_model_for_ticker(ticker)
+    model = _model_cache[ticker]
     scaler = load_scaler(ticker)
     if model is None or scaler is None:
         raise ApiError("Model not trained for ticker", 404)
@@ -224,6 +234,22 @@ def api_portfolio():
     )
 
 
+@app.route("/api/status", methods=["GET"])
+def api_status():
+    """Return database status and statistics."""
+    try:
+        txs = db_manager.get_all_transactions()
+        state = db_manager.get_portfolio_state()
+        return jsonify({
+            "db": "connected",
+            "transaction_count": len(txs),
+            "positions": len(state.get("positions", [])),
+            "portfolio_value": state.get("portfolio_value", 0)
+        })
+    except Exception as e:
+        return jsonify({"db": "error", "message": str(e)}), 500
+
+
 @app.route("/api/trade", methods=["POST"])
 def api_trade():
     """Execute BUY/SELL trade on paper portfolio."""
@@ -295,7 +321,9 @@ def api_reset():
 def api_backtest(ticker: str):
     """Run historical backtest for ticker using model predictions."""
     ticker = _validated_ticker(ticker)
-    model = load_model_for_ticker(ticker)
+    if ticker not in _model_cache:
+        _model_cache[ticker] = load_model_for_ticker(ticker)
+    model = _model_cache[ticker]
     scaler = load_scaler(ticker)
     if model is None or scaler is None:
         raise ApiError("Model not trained for ticker", 404)

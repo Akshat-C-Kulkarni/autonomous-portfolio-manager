@@ -6,6 +6,8 @@ const state = {
     backtestButtons: new Map()  // Store button references by ticker
 };
 
+let chartRefreshInterval = null;
+
 const el = {
     tickerInput: document.getElementById("tickerInput"),
     loadStockBtn: document.getElementById("loadStockBtn"),
@@ -106,6 +108,19 @@ function setSignalBadge(signal) {
     }
 }
 
+function startChartRefresh(ticker) {
+    if (chartRefreshInterval) clearInterval(chartRefreshInterval);
+    chartRefreshInterval = setInterval(async () => {
+        if (!ticker) return;
+        try {
+            const chart = await apiGet(`/api/chart/${ticker}`);
+            renderChart(chart);
+        } catch (e) {
+            console.warn('Chart refresh failed:', e);
+        }
+    }, 300000); // every 5 minutes
+}
+
 async function apiGet(url) {
     try {
         const res = await fetch(url);
@@ -195,6 +210,7 @@ function renderTickerChips() {
                 state.activeTicker = null;
             }
 
+            saveTickers();
             renderTickerChips();
         });
 
@@ -215,6 +231,11 @@ function renderTickerChips() {
 
         el.backtestActions.appendChild(btBtn);
     });
+}
+
+function saveTickers() {
+    localStorage.setItem('loadedTickers', JSON.stringify([...state.loadedTickers]));
+    localStorage.setItem('activeTicker', state.activeTicker || '');
 }
 
 function renderChart(data) {
@@ -353,10 +374,12 @@ async function loadStock(rawTicker) {
 
         state.activeTicker = ticker;
         state.loadedTickers.add(ticker);
+        saveTickers();
 
         renderTickerChips();
         renderPrediction(pred);
         renderChart(chart);
+        startChartRefresh(ticker);
 
     } catch (error) {
         console.error(error);
@@ -368,6 +391,7 @@ async function loadStock(rawTicker) {
 }
 
 async function executeTradeFromPrediction() {
+    console.log('executeTradeFromPrediction called', state.latestPrediction);
 
     if (!state.latestPrediction) {
         showToast("No prediction available.", 'info');
@@ -377,7 +401,7 @@ async function executeTradeFromPrediction() {
     const p = state.latestPrediction;
 
     if (!["BUY", "SELL"].includes(p.signal)) {
-        showToast("Current signal is HOLD. No trade executed.", 'info');
+        showToast(`Signal is ${p.signal} — no trade executed. Wait for a BUY or SELL signal.`, 'info');
         return;
     }
 
@@ -385,6 +409,7 @@ async function executeTradeFromPrediction() {
     el.approveBtn.innerHTML = '<span class="spinner-border spinner-border-sm me-1"></span>Executing...';
 
     try {
+        console.log('Executing trade:', {ticker: p.ticker, signal: p.signal, price: p.current_price, shares: calcShares(p.current_price)});
 
         const trade = await apiPost("/api/trade", {
             ticker: p.ticker,
@@ -490,11 +515,9 @@ async function refreshPortfolio() {
 }
 
 async function autonomousTick() {
+    console.log('Autonomous tick - ticker:', state.activeTicker, 'mode:', getMode());
 
-    if (
-        getMode() !== "full" ||
-        !state.activeTicker
-    ) {
+    if (!state.activeTicker) {
         return;
     }
 
@@ -519,6 +542,7 @@ async function autonomousTick() {
             });
 
             await refreshPortfolio();
+            showToast(`Auto-trade executed: ${pred.signal} ${calcShares(pred.current_price)} shares of ${pred.ticker} @ $${pred.current_price}`, 'success');
         }
 
     } catch (error) {
@@ -668,6 +692,11 @@ function startEngine() {
         30000
     );
 
+    if (el.startEngineBtn) {
+        el.startEngineBtn.textContent = "Engine Running ●";
+        el.startEngineBtn.style.color = "green";
+    }
+
     autonomousTick();
 }
 
@@ -676,8 +705,12 @@ function stopEngine() {
     if (state.engineInterval) {
 
         clearInterval(state.engineInterval);
-
         state.engineInterval = null;
+    }
+
+    if (el.startEngineBtn) {
+        el.startEngineBtn.textContent = "Start Engine";
+        el.startEngineBtn.style.color = "";
     }
 }
 
@@ -727,5 +760,50 @@ el.stopEngineBtn?.addEventListener(
     "click",
     stopEngine
 );
+
+document.getElementById('refreshChartBtn')?.addEventListener('click', async () => {
+    if (!state.activeTicker) return;
+    try {
+        const chart = await apiGet(`/api/chart/${state.activeTicker}`);
+        renderChart(chart);
+        showToast('Chart refreshed', 'info');
+    } catch (error) {
+        console.error('Manual chart refresh failed:', error);
+        showToast('Chart refresh failed', 'error');
+    }
+});
+
+const savedTickers = localStorage.getItem('loadedTickers');
+const savedActive = localStorage.getItem('activeTicker');
+if (savedTickers) {
+    try {
+        const tickers = JSON.parse(savedTickers);
+        tickers.forEach((t) => state.loadedTickers.add(t));
+        renderTickerChips();
+        if (savedActive && state.loadedTickers.has(savedActive)) {
+            loadStock(savedActive);
+        }
+    } catch (e) {
+        localStorage.removeItem('loadedTickers');
+    }
+}
+
+
+async function checkDbStatus() {
+    try {
+        const s = await apiGet('/api/status');
+        const badge = document.getElementById('dbStatusBadge');
+        if (s.db === 'connected') {
+            badge.textContent = `DB ✓ | ${s.transaction_count} trades`;
+            badge.className = 'badge text-bg-success fs-6';
+        }
+    } catch (e) {
+        document.getElementById('dbStatusBadge').textContent = 'DB ✗';
+        document.getElementById('dbStatusBadge').className = 'badge text-bg-danger fs-6';
+    }
+}
+
+checkDbStatus();
+
 
 refreshPortfolio();
