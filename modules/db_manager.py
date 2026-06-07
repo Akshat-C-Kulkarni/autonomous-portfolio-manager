@@ -50,6 +50,34 @@ CREATE TABLE IF NOT EXISTS transactions (
     cash_impact      REAL,
     portfolio_value  REAL
 );
+
+CREATE TABLE IF NOT EXISTS users (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    username TEXT NOT NULL UNIQUE,
+    password_hash TEXT NOT NULL,
+    created_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS user_portfolio_stocks (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id INTEGER NOT NULL,
+    ticker TEXT NOT NULL,
+    UNIQUE(user_id, ticker),
+    FOREIGN KEY(user_id) REFERENCES users(id)
+);
+
+CREATE TABLE IF NOT EXISTS user_transactions (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id INTEGER NOT NULL,
+    transaction_date TEXT NOT NULL,
+    ticker TEXT NOT NULL,
+    signal_type TEXT NOT NULL,
+    price REAL,
+    shares REAL,
+    cash_impact REAL,
+    portfolio_value REAL,
+    FOREIGN KEY(user_id) REFERENCES users(id)
+);
 """
 
 
@@ -296,6 +324,63 @@ class DatabaseManager:
         except sqlite3.Error as exc:
             logger.error("delete_all_transactions failed: %s", exc)
             raise
+
+    # ------------------------------------------------------------------
+    # users + user-specific data
+    # ------------------------------------------------------------------
+
+    def create_user(self, username: str, password_hash: str) -> int:
+        sql = "INSERT INTO users (username, password_hash, created_at) VALUES (?, ?, ?)"
+        from datetime import datetime, timezone
+        with self._connect() as conn:
+            cursor = conn.execute(sql, (username, password_hash, datetime.now(timezone.utc).isoformat()))
+            return cursor.lastrowid
+
+    def get_user_by_username(self, username: str) -> dict | None:
+        sql = "SELECT id, username, password_hash FROM users WHERE username = ?"
+        with self._connect() as conn:
+            row = conn.execute(sql, (username,)).fetchone()
+        return dict(row) if row else None
+
+    def get_user_by_id(self, user_id: int) -> dict | None:
+        sql = "SELECT id, username FROM users WHERE id = ?"
+        with self._connect() as conn:
+            row = conn.execute(sql, (user_id,)).fetchone()
+        return dict(row) if row else None
+
+    def save_user_stocks(self, user_id: int, tickers: list[str]) -> None:
+        with self._connect() as conn:
+            conn.execute("DELETE FROM user_portfolio_stocks WHERE user_id = ?", (user_id,))
+            conn.executemany(
+                "INSERT OR IGNORE INTO user_portfolio_stocks (user_id, ticker) VALUES (?, ?)",
+                [(user_id, t.upper()) for t in tickers]
+            )
+
+    def get_user_stocks(self, user_id: int) -> list[str]:
+        sql = "SELECT ticker FROM user_portfolio_stocks WHERE user_id = ? ORDER BY ticker"
+        with self._connect() as conn:
+            rows = conn.execute(sql, (user_id,)).fetchall()
+        return [r["ticker"] for r in rows]
+
+    def save_user_transaction(self, user_id: int, data: dict) -> None:
+        sql = """INSERT INTO user_transactions
+            (user_id, transaction_date, ticker, signal_type, price, shares, cash_impact, portfolio_value)
+            VALUES (:user_id, :transaction_date, :ticker, :signal_type, :price, :shares, :cash_impact, :portfolio_value)"""
+        data["user_id"] = user_id
+        with self._connect() as conn:
+            conn.execute(sql, data)
+
+    def get_user_transactions(self, user_id: int) -> list[dict]:
+        sql = """SELECT * FROM user_transactions 
+                 WHERE user_id = ? ORDER BY transaction_date DESC"""
+        with self._connect() as conn:
+            rows = conn.execute(sql, (user_id,)).fetchall()
+        return [dict(r) for r in rows]
+
+    def delete_user_transactions(self, user_id: int) -> None:
+        sql = "DELETE FROM user_transactions WHERE user_id = ?"
+        with self._connect() as conn:
+            conn.execute(sql, (user_id,))
 
 
 # ------------------------------------------------------------------

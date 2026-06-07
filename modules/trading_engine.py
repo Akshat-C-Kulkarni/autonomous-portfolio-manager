@@ -11,38 +11,39 @@ from modules.db_manager import DatabaseManager
 class PaperTradingEngine:
     """Simple paper trading engine with persistent portfolio state."""
 
-    def __init__(self, initial_cash: float = 100000, db_path: str = "portfolio.db") -> None:
-        self._initial_cash_config = float(initial_cash)
+    def __init__(self, initial_cash: float = 100000, 
+                 db_path: str = "portfolio.db",
+                 user_id: int = None) -> None:
         self.initial_cash = float(initial_cash)
+        self._initial_cash_config = float(initial_cash)
+        self.user_id = user_id
         self.cash = float(initial_cash)
-        self.holdings: Dict[str, float] = {}
-        self.transactions: List[dict] = []
-        self._cost_basis: Dict[str, float] = {}
+        self.holdings = {}
+        self.transactions = []
+        self._cost_basis = {}
         self._profitable_sells = 0
         self._total_sells = 0
-
         self.db_manager = DatabaseManager(db_path=db_path)
         self.db_manager.init_db()
         self._load_state_from_db()
 
     def _load_state_from_db(self) -> None:
-        """Rebuild in-memory state from persisted transactions."""
-        rows = self.db_manager.get_all_transactions()
-        # DB returns DESC; replay in chronological order.
-        rows = sorted(rows, key=lambda r: (r.get("transaction_date", ""), r.get("id", 0)))
-
-        if not rows:
-            return
-
-        self.initial_cash = self._initial_cash_config
-        self.cash = self.initial_cash
-
+        if self.user_id is not None:
+            rows = self.db_manager.get_user_transactions(self.user_id)
+        else:
+            rows = self.db_manager.get_all_transactions()
+        
+        rows = sorted(rows, key=lambda r: (
+            r.get("transaction_date", ""), r.get("id", 0)
+        ))
+        
+        self.cash = self._initial_cash_config
         self.holdings = {}
         self._cost_basis = {}
         self._profitable_sells = 0
         self._total_sells = 0
         self.transactions = []
-
+        
         for tx in rows:
             self._apply_transaction(tx, persist=False)
 
@@ -92,20 +93,28 @@ class PaperTradingEngine:
         self.transactions.append(stored)
 
         if persist:
-            self.db_manager.save_transaction(stored)
+            if self.user_id is not None:
+                self.db_manager.save_user_transaction(
+                    self.user_id, stored
+                )
+            else:
+                self.db_manager.save_transaction(stored)
 
-    def buy(self, ticker: str, shares: float, price: float) -> bool:
-        """Execute a BUY if enough cash is available."""
+    def buy(self, ticker, shares, price):
         ticker = ticker.upper()
-        shares = float(shares)
+        shares = max(1.0, float(shares))
         price = float(price)
-        if shares <= 0 or price <= 0:
+        if price <= 0:
             return False
-
+        
+        available = self.cash
+        if available < price:
+            return False
+        
+        max_shares = int(available * 0.10 / price)
+        shares = max(1, min(int(shares), max_shares if max_shares > 0 else 1))
         cost = shares * price
-        if cost > self.cash:
-            return False
-
+        
         tx = {
             "transaction_date": datetime.now(timezone.utc).isoformat(),
             "ticker": ticker,
@@ -118,19 +127,19 @@ class PaperTradingEngine:
         self._apply_transaction(tx, persist=True)
         return True
 
-    def sell(self, ticker: str, shares: float, price: float) -> bool:
-        """Execute a SELL if enough holdings are available."""
+    def sell(self, ticker, shares, price):
         ticker = ticker.upper()
-        shares = float(shares)
         price = float(price)
-        if shares <= 0 or price <= 0:
+        if price <= 0:
             return False
-
+        
         owned = self.holdings.get(ticker, 0.0)
-        if shares > owned:
+        if owned <= 0:
             return False
-
+        
+        shares = min(float(shares), owned)
         proceeds = shares * price
+        
         tx = {
             "transaction_date": datetime.now(timezone.utc).isoformat(),
             "ticker": ticker,
@@ -183,11 +192,16 @@ class PaperTradingEngine:
         return max(0, int(budget // price))
 
     def reset_portfolio(self) -> None:
-        """Reset holdings/cash and clear transaction history from DB."""
-        # Persist reset by clearing transaction log.
-        self.db_manager.delete_all_transactions()
-
-        self.cash = float(self.initial_cash)
+        if self.user_id is not None:
+            with self.db_manager._connect() as conn:
+                conn.execute(
+                    "DELETE FROM user_transactions WHERE user_id = ?",
+                    (self.user_id,)
+                )
+        else:
+            self.db_manager.delete_all_transactions()
+        
+        self.cash = self._initial_cash_config
         self.holdings = {}
         self.transactions = []
         self._cost_basis = {}

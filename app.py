@@ -8,7 +8,9 @@ from typing import Any
 
 import numpy as np
 import pandas as pd
-from flask import Flask, jsonify, render_template, request, send_from_directory
+from flask import Flask, jsonify, render_template, request, send_from_directory, session, redirect, url_for
+import hashlib
+import secrets
 from dotenv import load_dotenv
 
 from modules.data_collector import fetch_stock_data
@@ -26,11 +28,26 @@ app = Flask(__name__)
 app.config["ENV"] = os.getenv("FLASK_ENV", "production")
 app.config["DEBUG"] = os.getenv("DEBUG", "false").strip().lower() in {"1", "true", "yes", "on"}
 
+# Session secret
+app.secret_key = os.getenv("SECRET_KEY", "dev-secret-key-change-in-production")
+app.config['SESSION_COOKIE_SAMESITE'] = 'Lax'
+app.config['SESSION_COOKIE_HTTPONLY'] = True
+app.config['SESSION_COOKIE_SECURE'] = False
+
 logger = logging.getLogger(__name__)
 
 db_manager = DatabaseManager("portfolio.db")
 db_manager.init_db()
-trading_engine = PaperTradingEngine(initial_cash=100000, db_path="portfolio.db")
+_user_engines = {}
+
+def get_user_engine(user_id: int) -> PaperTradingEngine:
+    if user_id not in _user_engines:
+        _user_engines[user_id] = PaperTradingEngine(
+            initial_cash=100000, 
+            db_path="portfolio.db",
+            user_id=user_id
+        )
+    return _user_engines[user_id]
 
 # Price cache
 _price_cache: dict[str, float] = {}
@@ -81,6 +98,20 @@ def _json_error(message: str, status_code: int = 400):
     return jsonify({"error": message}), status_code
 
 
+def hash_password(password: str) -> str:
+    return hashlib.sha256(password.encode()).hexdigest()
+
+
+def get_current_user_id() -> int | None:
+    return session.get("user_id")
+
+
+def require_login():
+    if not get_current_user_id():
+        raise ApiError("Not logged in", 401)
+    return get_current_user_id()
+
+
 class ApiError(Exception):
     """Application-level API error with HTTP status code."""
 
@@ -123,13 +154,100 @@ def handle_unexpected_error(_err):
 
 @app.route("/", methods=["GET"])
 def index():
-    """Serve main dashboard."""
+    """Serve main dashboard or redirect to login when unauthenticated."""
+    if not get_current_user_id():
+        return redirect(url_for("login_page"))
     return render_template("index.html")
 
 
 @app.route('/favicon.ico')
 def favicon():
     return '', 204
+
+
+@app.route("/signup", methods=["GET"])
+def signup_page():
+    return render_template("signup.html")
+
+
+@app.route("/login", methods=["GET"])
+def login_page():
+    return render_template("login.html")
+
+
+@app.route("/api/auth/signup", methods=["POST"])
+def api_signup():
+    body = request.get_json(silent=True) or {}
+    username = str(body.get("username", "")).strip()
+    password = str(body.get("password", "")).strip()
+    tickers = body.get("tickers", [])
+    if not username or not password:
+        raise ApiError("Username and password are required", 400)
+    if len(password) < 6:
+        raise ApiError("Password must be at least 6 characters", 400)
+    if not tickers:
+        raise ApiError("Select at least one stock", 400)
+    existing = db_manager.get_user_by_username(username)
+    if existing:
+        raise ApiError("Username already taken", 409)
+    user_id = db_manager.create_user(username, hash_password(password))
+    db_manager.save_user_stocks(user_id, tickers)
+    session["user_id"] = user_id
+    session["username"] = username
+    return jsonify({"success": True, "username": username, "redirect": "/"})
+
+
+@app.route("/api/auth/login", methods=["POST"])
+def api_login():
+    body = request.get_json(silent=True) or {}
+    username = str(body.get("username", "")).strip()
+    password = str(body.get("password", "")).strip()
+    if not username or not password:
+        raise ApiError("Username and password are required", 400)
+    user = db_manager.get_user_by_username(username)
+    if not user or user["password_hash"] != hash_password(password):
+        raise ApiError("Invalid username or password", 401)
+    session["user_id"] = user["id"]
+    session["username"] = user["username"]
+    print(f"DEBUG login success - session set to: user_id={user['id']} username={username}")
+    return jsonify({"success": True, "username": username, "redirect": "/"})
+
+
+@app.route("/api/auth/logout", methods=["POST"])
+def api_logout():
+    user_id = get_current_user_id()
+    if user_id and user_id in _user_engines:
+        del _user_engines[user_id]
+    session.clear()
+    return jsonify({"success": True, "redirect": "/login"})
+
+
+@app.route("/api/auth/me", methods=["GET"])
+def api_me():
+    print(f"DEBUG /api/auth/me - session contents: {dict(session)}")
+    user_id = get_current_user_id()
+    if not user_id:
+        return jsonify({"logged_in": False})
+    user = db_manager.get_user_by_id(user_id)
+    stocks = db_manager.get_user_stocks(user_id)
+    return jsonify({"logged_in": True, "username": user["username"], "stocks": stocks})
+
+
+@app.route("/api/portfolio/stocks", methods=["GET"])
+def api_get_portfolio_stocks():
+    user_id = require_login()
+    return jsonify({"stocks": db_manager.get_user_stocks(user_id)})
+
+
+@app.route("/api/portfolio/stocks", methods=["POST"])
+def api_update_portfolio_stocks():
+    user_id = require_login()
+    body = request.get_json(silent=True) or {}
+    tickers = body.get("tickers", [])
+    if not tickers:
+        raise ApiError("At least one ticker required", 400)
+    db_manager.save_user_stocks(user_id, tickers)
+    return jsonify({"success": True, "stocks": tickers})
 
 
 @app.route("/api/predict/<ticker>", methods=["GET"])
@@ -205,6 +323,10 @@ def api_indicators(ticker: str):
 @app.route("/api/portfolio", methods=["GET"])
 def api_portfolio():
     """Return current paper portfolio state."""
+    user_id = require_login()
+    trading_engine = get_user_engine(user_id)
+    print(f"DEBUG portfolio: cash={trading_engine.get_cash()}, holdings={trading_engine.get_holdings()}, transactions={len(trading_engine.get_transaction_history())}")
+    print(f"DEBUG portfolio check: engine id={id(trading_engine)}, cash={trading_engine.get_cash()}")
     holdings = trading_engine.get_holdings()
     
     # Build fallback prices from transaction history (most recent first)
@@ -220,31 +342,45 @@ def api_portfolio():
 
     total_value = trading_engine.get_portfolio_value(current_prices)
     pnl = trading_engine.get_pnl(current_prices)
-    history = trading_engine.get_transaction_history()[-20:]
+    history = trading_engine.get_transaction_history()
+    # Return last 20, newest first
+    history_reversed = list(reversed(history))[:20]
 
-    return jsonify(
-        {
-            "cash": round(trading_engine.get_cash(), 4),
-            "holdings": holdings,
-            "total_value": round(float(total_value), 4),
-            "pnl": round(float(pnl), 4),
-            "win_rate": round(float(trading_engine.get_win_rate()), 4),
-            "transactions": history,
-        }
-    )
+    return jsonify({
+        "cash": round(trading_engine.get_cash(), 4),
+        "holdings": holdings,
+        "total_value": round(float(total_value), 4),
+        "pnl": round(float(pnl), 4),
+        "win_rate": round(float(trading_engine.get_win_rate()), 4),
+        "transactions": history_reversed,
+    })
 
 
 @app.route("/api/status", methods=["GET"])
 def api_status():
     """Return database status and statistics."""
     try:
-        txs = db_manager.get_all_transactions()
-        state = db_manager.get_portfolio_state()
+        user_id = get_current_user_id()
+        if user_id:
+            engine = get_user_engine(user_id)
+            txs = engine.get_transaction_history()
+            num_positions = len(engine.get_holdings())
+            fallback_prices = {}
+            for tx in reversed(txs):
+                t = tx.get("ticker")
+                if t and t not in fallback_prices:
+                    fallback_prices[t] = float(tx.get("price", 0))
+            portfolio_value = engine.get_portfolio_value(fallback_prices)
+        else:
+            txs = []
+            num_positions = 0
+            portfolio_value = 0.0
+
         return jsonify({
             "db": "connected",
             "transaction_count": len(txs),
-            "positions": len(state.get("positions", [])),
-            "portfolio_value": state.get("portfolio_value", 0)
+            "positions": num_positions,
+            "portfolio_value": portfolio_value
         })
     except Exception as e:
         return jsonify({"db": "error", "message": str(e)}), 500
@@ -253,7 +389,9 @@ def api_status():
 @app.route("/api/trade", methods=["POST"])
 def api_trade():
     """Execute BUY/SELL trade on paper portfolio."""
-    body: dict[str, Any] = request.get_json(silent=True) or {}
+    user_id = require_login()
+    trading_engine = get_user_engine(user_id)
+    body = request.get_json(silent=True) or {}
     ticker = _validated_ticker(body.get("ticker", ""))
     signal_type = str(body.get("signal_type", "")).upper()
     price = float(body.get("price", 0))
@@ -261,23 +399,42 @@ def api_trade():
 
     if signal_type not in {"BUY", "SELL"}:
         raise ApiError("signal_type must be BUY or SELL", 400)
-    if price <= 0 or shares <= 0:
-        raise ApiError("price and shares must be positive numbers", 400)
+    if price <= 0:
+        raise ApiError("price must be positive", 400)
+
+    shares = max(1.0, shares)
 
     if signal_type == "BUY":
+        available_cash = trading_engine.get_cash()
+        if available_cash < price:
+            return jsonify({
+                "success": False,
+                "updated_cash": round(available_cash, 2),
+                "updated_holdings": trading_engine.get_holdings(),
+                "message": f"Insufficient cash. Have ${available_cash:.2f}, need ${price:.2f} for 1 share."
+            })
+        max_shares = int(available_cash * 0.10 / price)
+        shares = max(1, min(int(shares), max_shares if max_shares > 0 else 1))
         success = trading_engine.buy(ticker=ticker, shares=shares, price=price)
     else:
+        held = trading_engine.get_holdings().get(ticker, 0)
+        if held <= 0:
+            return jsonify({
+                "success": False,
+                "updated_cash": round(trading_engine.get_cash(), 2),
+                "updated_holdings": trading_engine.get_holdings(),
+                "message": f"Auto-trade skipped: No {ticker} shares held to sell. Wait for a BUY signal first."
+            })
+        shares = min(int(shares), int(held))
         success = trading_engine.sell(ticker=ticker, shares=shares, price=price)
 
-    message = "Trade executed successfully" if success else "Trade rejected by portfolio constraints"
-    return jsonify(
-        {
-            "success": bool(success),
-            "updated_cash": round(trading_engine.get_cash(), 4),
-            "updated_holdings": trading_engine.get_holdings(),
-            "message": message,
-        }
-    )
+    message = "Trade executed successfully" if success else "Trade failed"
+    return jsonify({
+        "success": bool(success),
+        "updated_cash": round(trading_engine.get_cash(), 4),
+        "updated_holdings": trading_engine.get_holdings(),
+        "message": message
+    })
 
 
 @app.route("/api/chart/<ticker>", methods=["GET"])
@@ -313,6 +470,8 @@ def api_chart(ticker: str):
 @app.route("/api/reset", methods=["POST"])
 def api_reset():
     """Reset paper trading portfolio to initial state."""
+    user_id = require_login()
+    trading_engine = get_user_engine(user_id)
     trading_engine.reset_portfolio()
     return jsonify({"success": True, "message": "Portfolio reset successfully"})
 

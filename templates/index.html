@@ -11,25 +11,23 @@
 <body>
 <div class="container-fluid py-3 px-3 px-md-4">
     <div class="panel p-3 mb-3 d-flex flex-wrap justify-content-between align-items-center gap-3">
-        <h3 class="m-0">Autonomous Financial Portfolio Manager Agent</h3>
-        <div class="d-flex gap-2">
+        <div>
+            <h3 class="m-0">Portfolio Manager Agent</h3>
+            <small class="text-secondary">Welcome, <span id="usernameDisplay">...</span></small>
+        </div>
+        <div class="d-flex gap-2 align-items-center flex-wrap">
             <span class="badge text-bg-secondary fs-6" id="cashBadge">Cash: $0.00</span>
-            <span class="badge fs-6" id="pnlBadge">P&amp;L: $0.00</span>
+            <span class="badge fs-6" id="pnlBadge">P&L: $0.00</span>
             <span class="badge text-bg-secondary fs-6" id="dbStatusBadge">DB: checking...</span>
+            <button class="btn btn-sm btn-outline-secondary" id="editPortfolioBtn">Edit Portfolio</button>
+            <button class="btn btn-sm btn-outline-danger" id="logoutBtn">Logout</button>
         </div>
     </div>
 
     <div class="panel p-3 mb-3">
-        <div class="row g-2 align-items-center">
-            <div class="col-md-5">
-                <input id="tickerInput" class="form-control bg-dark text-light border-secondary" placeholder="Enter ticker (e.g. AAPL)">
-            </div>
-            <div class="col-auto">
-                <button class="btn btn-primary" id="loadStockBtn">Load Stock</button>
-            </div>
-            <div class="col">
-                <div id="loadedTickers" class="d-flex flex-wrap gap-2"></div>
-            </div>
+        <div class="d-flex flex-wrap align-items-center gap-2">
+            <span class="text-secondary" style="font-size:0.85rem">Your portfolio:</span>
+            <div id="loadedTickers" class="d-flex flex-wrap gap-2"></div>
         </div>
     </div>
 
@@ -37,33 +35,64 @@
         <div class="col-lg-8">
             <div class="panel p-3 h-100">
                 <div class="d-flex justify-content-between align-items-center mb-2">
-                    <h5 class="m-0" id="chartTitle">Chart</h5>
+                    <div id="chartTabs" class="d-flex flex-wrap gap-2"></div>
                     <div class="d-flex gap-2 align-items-center">
-                        <button class="btn btn-sm btn-outline-secondary" id="refreshChartBtn">
-                            ↻ Refresh
-                        </button>
-                        <span class="small-muted">Candlestick + SMA + Bollinger Bands</span>
+                        <span class="small-muted" id="chartSubtitle">Candlestick + SMA + Bollinger Bands</span>
+                        <button class="btn btn-sm btn-outline-secondary" id="refreshChartBtn">↻ Refresh</button>
                     </div>
                 </div>
-                <div id="chart" style="height: 500px;"></div>
-                <div id="chartPlaceholder" style="height:500px;display:flex;align-items:center;justify-content:center;color:#4b5563;font-size:14px;">
-                    Enter a ticker above and click Load Stock to view the chart
+                <div id="chart" style="height: 480px;"></div>
+                <div class="mt-3 p-3" style="background:#0f1116;border:1px solid #2a3040;border-radius:8px;">
+                    <div class="d-flex flex-wrap align-items-center gap-3">
+                        <div>
+                            <span class="small-muted" style="font-size:0.8rem;">Manual Trade</span>
+                            <div class="fw-semibold" id="manualTradeTicker" 
+                                 style="font-size:1rem;color:#60a5fa;">
+                                — Select a stock
+                            </div>
+                        </div>
+                        <div class="d-flex align-items-center gap-2">
+                            <label class="small-muted" style="font-size:0.8rem;white-space:nowrap;">
+                                Shares:
+                            </label>
+                            <input 
+                                type="number" 
+                                id="manualSharesInput"
+                                class="form-control form-control-sm bg-dark text-light border-secondary"
+                                min="1" 
+                                step="1"
+                                value="1"
+                                style="width:90px;"
+                            />
+                        </div>
+                        <div class="d-flex gap-2">
+                            <button 
+                                class="btn btn-sm btn-success px-4" 
+                                id="manualBuyBtn">
+                                Buy
+                            </button>
+                            <button 
+                                class="btn btn-sm btn-danger px-4" 
+                                id="manualSellBtn">
+                                Sell
+                            </button>
+                        </div>
+                        <div id="manualTradeStatus" 
+                             class="small-muted" 
+                             style="font-size:0.8rem;">
+                        </div>
+                    </div>
                 </div>
             </div>
         </div>
         <div class="col-lg-4">
             <div class="panel p-3 h-100">
-                <h5 class="mb-3">Prediction</h5>
-                <div class="d-flex justify-content-between mb-2"><span>Predicted High</span><strong id="predHigh">-</strong></div>
-                <div class="d-flex justify-content-between mb-2"><span>Predicted Low</span><strong id="predLow">-</strong></div>
-                <div class="d-flex justify-content-between mb-2"><span>Current Price</span><strong id="currentPrice">-</strong></div>
-                <div class="d-flex justify-content-between mb-2"><span>Signal</span><span class="badge" id="signalBadge">-</span></div>
-                <div class="d-flex justify-content-between mb-3"><span>Confidence</span><strong id="confidence">-</strong></div>
-                <div class="d-flex gap-2">
-                    <button class="btn btn-success w-100" id="approveBtn">Approve</button>
-                    <button class="btn btn-outline-light w-100" id="rejectBtn">Reject</button>
+                <h5 class="mb-3">Predictions</h5>
+                <div id="allPredictionsContainer">
+                    <div class="small-muted text-center py-3">
+                        Load stocks to see predictions
+                    </div>
                 </div>
-                <p class="small-muted mt-3 mb-0" id="predictionMeta">Load a ticker to get a prediction.</p>
             </div>
         </div>
     </div>

@@ -13,7 +13,15 @@ from modules.preprocessor import prepare_data, save_scaler
 
 
 def main() -> None:
-    tickers = ["AAPL", "GOOGL", "MSFT", "AMZN", "TSLA"]
+    tickers = [
+        "AAPL", "MSFT", "GOOGL", "AMZN", "TSLA", "META", 
+        "NVDA", "NFLX", "AMD", "INTC", "JPM", "BAC", "GS", 
+        "MS", "WFC", "V", "MA", "PYPL", "SQ", "COIN",
+        "JNJ", "PFE", "MRK", "ABBV", "UNH", "CVS", "AMGN", 
+        "GILD", "BMY", "LLY", "XOM", "CVX", "COP", "SLB", 
+        "NEE", "WMT", "TGT", "COST", "HD", "LOW", 
+        "MCD", "SBUX", "NKE", "DIS", "IBM"
+    ]
     total = len(tickers)
 
     for idx, ticker in enumerate(tickers, start=1):

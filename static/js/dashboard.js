@@ -3,14 +3,15 @@ const state = {
     activeTicker: null,
     latestPrediction: null,
     engineInterval: null,
-    backtestButtons: new Map()  // Store button references by ticker
+    backtestButtons: new Map(),  // Store button references by ticker
+    allPredictions: {}
 };
 
 let chartRefreshInterval = null;
+let activeChartTicker = null;
+let chartDataCache = {};
 
 const el = {
-    tickerInput: document.getElementById("tickerInput"),
-    loadStockBtn: document.getElementById("loadStockBtn"),
     loadedTickers: document.getElementById("loadedTickers"),
     chartTitle: document.getElementById("chartTitle"),
     predHigh: document.getElementById("predHigh"),
@@ -19,8 +20,6 @@ const el = {
     signalBadge: document.getElementById("signalBadge"),
     confidence: document.getElementById("confidence"),
     predictionMeta: document.getElementById("predictionMeta"),
-    approveBtn: document.getElementById("approveBtn"),
-    rejectBtn: document.getElementById("rejectBtn"),
     modeSemi: document.getElementById("modeSemi"),
     modeFull: document.getElementById("modeFull"),
     startEngineBtn: document.getElementById("startEngineBtn"),
@@ -75,8 +74,10 @@ function updateEngineButtonVisibility() {
 let portfolioCash = 100000;
 
 function calcShares(price) {
-    const budget = portfolioCash * 0.10;
-    return Math.max(1, Math.floor(budget / price));
+    if (!price || price <= 0) return 1;
+    const budget = (portfolioCash || 100000) * 0.10;
+    const calculated = Math.floor(budget / price);
+    return Math.max(1, calculated);
 }
 
 function showToast(message, type = 'info') {
@@ -175,6 +176,52 @@ async function apiPost(url, body = {}) {
     }
 }
 
+
+async function loadUserPortfolio() {
+    try {
+        const me = await apiGet('/api/auth/me');
+        console.log('api/auth/me response:', JSON.stringify(me));
+        
+        if (!me.logged_in) {
+            console.log('Not logged in, redirecting to login');
+            window.location.href = '/login';
+            return;
+        }
+        
+        console.log('Logged in as:', me.username, 'stocks:', me.stocks);
+        
+        const usernameEl = document.getElementById('usernameDisplay');
+        if (usernameEl) usernameEl.textContent = me.username;
+        
+        if (me.stocks && me.stocks.length > 0) {
+            for (const ticker of me.stocks) {
+                state.loadedTickers.add(ticker);
+            }
+            renderTickerChips();
+            renderChartTabs();
+            
+            await loadStock(me.stocks[0]);
+            
+            const predictionPromises = me.stocks.map(async (ticker) => {
+                try {
+                    const pred = await apiGet('/api/predict/' + ticker);
+                    state.allPredictions[ticker] = pred;
+                    renderPrediction(pred);
+                } catch(e) {
+                    console.warn('Prediction failed for ' + ticker + ':', e.message);
+                }
+            });
+            
+            await Promise.all(predictionPromises);
+            await refreshPortfolio();
+        }
+        
+    } catch(e) {
+        console.error('Failed to load user portfolio:', e);
+        window.location.href = '/login';
+    }
+}
+
 function renderTickerChips() {
     if (!el.loadedTickers || !el.backtestActions) return;
 
@@ -210,7 +257,6 @@ function renderTickerChips() {
                 state.activeTicker = null;
             }
 
-            saveTickers();
             renderTickerChips();
         });
 
@@ -231,18 +277,53 @@ function renderTickerChips() {
 
         el.backtestActions.appendChild(btBtn);
     });
+
+    renderChartTabs();
 }
 
-function saveTickers() {
-    localStorage.setItem('loadedTickers', JSON.stringify([...state.loadedTickers]));
-    localStorage.setItem('activeTicker', state.activeTicker || '');
+function renderChartTabs() {
+    const tabsEl = document.getElementById('chartTabs');
+    if (!tabsEl) return;
+    tabsEl.innerHTML = '';
+    state.loadedTickers.forEach(ticker => {
+        const tab = document.createElement('button');
+        tab.className = 'btn btn-sm ' +
+            (ticker === activeChartTicker
+                ? 'btn-primary'
+                : 'btn-outline-secondary');
+        tab.textContent = ticker;
+        tab.addEventListener('click', () => switchChartTab(ticker));
+        tabsEl.appendChild(tab);
+    });
 }
+
+async function switchChartTab(ticker) {
+    activeChartTicker = ticker;
+    const manualTickerEl = document.getElementById('manualTradeTicker');
+    if (manualTickerEl) manualTickerEl.textContent = ticker;
+    renderChartTabs();
+    if (chartDataCache[ticker]) {
+        renderChart(chartDataCache[ticker]);
+    } else {
+        try {
+            const chart = await apiGet('/api/chart/' + ticker);
+            chartDataCache[ticker] = chart;
+            renderChart(chart);
+        } catch(e) {
+            console.error('Chart load failed:', e);
+        }
+    }
+}
+
+// localStorage persistence removed: tickers are stored per-user in the database
 
 function renderChart(data) {
     if (!data || !window.Plotly) return;
 
-    document.getElementById('chartPlaceholder').style.display = 'none';
-    el.chartTitle.textContent = `${data.ticker} - Price Chart`;
+    const chartSubtitle = document.getElementById('chartSubtitle');
+    if (chartSubtitle) {
+        chartSubtitle.textContent = `Candlestick + SMA + Bollinger Bands`;
+    }
 
     const traces = [
         {
@@ -340,19 +421,126 @@ function renderChart(data) {
 
 function renderPrediction(pred) {
     if (!pred) return;
-
     state.latestPrediction = pred;
+    
+    const container = document.getElementById('allPredictionsContainer');
+    if (!container) return;
+    
+    // Remove existing card for this ticker if present
+    const existingCard = document.getElementById('pred-card-' + pred.ticker);
+    if (existingCard) existingCard.remove();
+    
+    // Create new prediction card
+    const signalColors = {
+        'BUY': 'success',
+        'SELL': 'danger', 
+        'HOLD': 'secondary'
+    };
+    const color = signalColors[pred.signal] || 'secondary';
+    
+    const card = document.createElement('div');
+    card.id = 'pred-card-' + pred.ticker;
+    card.className = 'mb-3 p-3';
+    card.style.cssText = 'background:#0f1116;border:1px solid #2a3040;border-radius:8px;';
+    card.innerHTML = `
+        <div class="d-flex justify-content-between align-items-center mb-2">
+            <strong>${pred.ticker}</strong>
+            <span class="badge text-bg-${color}">${pred.signal}</span>
+        </div>
+        <div class="d-flex justify-content-between mb-1">
+            <span class="small-muted">Current Price</span>
+            <span>$${Number(pred.current_price).toFixed(2)}</span>
+        </div>
+        <div class="d-flex justify-content-between mb-1">
+            <span class="small-muted">Predicted High</span>
+            <span class="text-success">$${Number(pred.predicted_high).toFixed(2)}</span>
+        </div>
+        <div class="d-flex justify-content-between mb-1">
+            <span class="small-muted">Predicted Low</span>
+            <span class="text-danger">$${Number(pred.predicted_low).toFixed(2)}</span>
+        </div>
+        <div class="d-flex justify-content-between mb-2">
+            <span class="small-muted">Confidence</span>
+            <span>${pred.confidence}%</span>
+        </div>
+        <div id="pred-actions-${pred.ticker}">
+            <div class="d-flex align-items-center gap-2 mb-2">
+                <label style="font-size:0.8rem;color:#8a93a5;white-space:nowrap;">
+                    Shares:
+                </label>
+                <input 
+                    type="number" 
+                    id="shares-input-${pred.ticker}"
+                    class="form-control form-control-sm bg-dark text-light border-secondary"
+                    min="1" 
+                    step="1"
+                    style="width:80px;"
+                    value="${calcShares(pred.current_price)}"
+                />
+                <span style="font-size:0.75rem;color:#8a93a5;">
+                    (10% = ${calcShares(pred.current_price)})
+                </span>
+            </div>
+            <div class="d-flex gap-2">
+                <button 
+                    class="btn btn-sm btn-success w-100" 
+                    onclick="approveTrade('${pred.ticker}')">
+                    Approve
+                </button>
+                <button 
+                    class="btn btn-sm btn-outline-light w-100" 
+                    onclick="rejectTrade('${pred.ticker}')">
+                    Reject
+                </button>
+            </div>
+        </div>
+    `;
+    
+    // Prepend so newest prediction is at top
+    container.prepend(card);
+}
 
-    el.predHigh.textContent = fmtMoney(pred.predicted_high);
-    el.predLow.textContent = fmtMoney(pred.predicted_low);
-    el.currentPrice.textContent = fmtMoney(pred.current_price);
+async function approveTrade(ticker) {
+    const pred = state.allPredictions[ticker];
+    if (!pred) return;
+    if (!['BUY','SELL'].includes(pred.signal)) {
+        showToast('Signal is HOLD — no trade executed', 'info');
+        return;
+    }
+    const sharesInput = document.getElementById('shares-input-' + ticker);
+    const shares = sharesInput 
+        ? Math.max(1, parseInt(sharesInput.value) || 1)
+        : calcShares(pred.current_price);
 
-    el.confidence.textContent = fmtPct(pred.confidence);
+    console.log('Approve trade debug:', {
+        ticker: pred.ticker,
+        signal: pred.signal,
+        price: pred.current_price,
+        shares: shares,
+        portfolioCash: portfolioCash
+    });
+    try {
+        const trade = await apiPost('/api/trade', {
+            ticker: pred.ticker,
+            signal_type: pred.signal,
+            price: pred.current_price,
+            shares: shares
+        });
+        showToast(trade.message, trade.success ? 'success' : 'error');
+        await refreshPortfolio();
+        // Remove the action buttons after trade
+        const actions = document.getElementById('pred-actions-' + ticker);
+        if (actions) actions.innerHTML = '<span class="small-muted">Trade submitted</span>';
+    } catch(e) {
+        showToast('Trade failed: ' + e.message, 'error');
+    }
+}
 
-    el.predictionMeta.textContent =
-        `${pred.ticker} | horizon: ${pred.days_ahead} day(s)`;
-
-    setSignalBadge(pred.signal);
+function rejectTrade(ticker) {
+    const card = document.getElementById('pred-card-' + ticker);
+    if (card) card.remove();
+    if (state.allPredictions) delete state.allPredictions[ticker];
+    showToast('Prediction rejected for ' + ticker, 'info');
 }
 
 async function loadStock(rawTicker) {
@@ -363,79 +551,40 @@ async function loadStock(rawTicker) {
         return;
     }
 
-    el.loadStockBtn.disabled = true;
-    el.loadStockBtn.innerHTML = '<span class="spinner-border spinner-border-sm me-1"></span>Loading...';
-
     try {
         const [pred, chart] = await Promise.all([
             apiGet(`/api/predict/${ticker}`),
             apiGet(`/api/chart/${ticker}`)
         ]);
 
+        state.allPredictions[pred.ticker] = pred;
         state.activeTicker = ticker;
         state.loadedTickers.add(ticker);
-        saveTickers();
-
+        
         renderTickerChips();
         renderPrediction(pred);
         renderChart(chart);
+        activeChartTicker = ticker;
+        const manualTickerEl = document.getElementById('manualTradeTicker');
+        if (manualTickerEl) manualTickerEl.textContent = ticker;
+        chartDataCache[ticker] = chart;
+        renderChartTabs();
         startChartRefresh(ticker);
 
     } catch (error) {
         console.error(error);
         showToast(`Load stock failed: ${error.message}`, 'error');
-    } finally {
-        el.loadStockBtn.disabled = false;
-        el.loadStockBtn.textContent = 'Load Stock';
     }
 }
 
-async function executeTradeFromPrediction() {
-    console.log('executeTradeFromPrediction called', state.latestPrediction);
 
-    if (!state.latestPrediction) {
-        showToast("No prediction available.", 'info');
-        return;
-    }
-
-    const p = state.latestPrediction;
-
-    if (!["BUY", "SELL"].includes(p.signal)) {
-        showToast(`Signal is ${p.signal} — no trade executed. Wait for a BUY or SELL signal.`, 'info');
-        return;
-    }
-
-    el.approveBtn.disabled = true;
-    el.approveBtn.innerHTML = '<span class="spinner-border spinner-border-sm me-1"></span>Executing...';
-
-    try {
-        console.log('Executing trade:', {ticker: p.ticker, signal: p.signal, price: p.current_price, shares: calcShares(p.current_price)});
-
-        const trade = await apiPost("/api/trade", {
-            ticker: p.ticker,
-            signal_type: p.signal,
-            price: p.current_price,
-            shares: calcShares(p.current_price)
-        });
-
-        await refreshPortfolio();
-
-        showToast(trade.message || "Trade executed successfully.", 'success');
-
-    } catch (error) {
-        console.error(error);
-        showToast(`Trade failed: ${error.message}`, 'error');
-    } finally {
-        el.approveBtn.disabled = false;
-        el.approveBtn.textContent = 'Approve';
-    }
-}
 
 async function refreshPortfolio() {
 
     try {
 
         const data = await apiGet("/api/portfolio");
+        console.log('Portfolio data received:', JSON.stringify(data));
 
         portfolioCash = Number(data.cash) || 100000;
 
@@ -466,13 +615,20 @@ async function refreshPortfolio() {
 
         el.txTableBody.innerHTML = "";
 
-        if ((data.transactions || []).length > 0) {
-            document.getElementById('emptyTxRow')?.remove();
-        }
+        const rows = [...(data.transactions || [])];
+        console.log('Transactions to render:', rows.length, rows);
 
-        const rows = [...(data.transactions || [])]
-            .reverse()
-            .slice(0, 20);
+        if (rows.length === 0) {
+            // Keep or restore empty state row
+            if (!document.getElementById('emptyTxRow')) {
+                const emptyRow = document.createElement('tr');
+                emptyRow.id = 'emptyTxRow';
+                emptyRow.innerHTML = '<td colspan="6" style="text-align:center;color:#4b5563;padding:2rem;">No transactions yet</td>';
+                el.txTableBody.appendChild(emptyRow);
+            }
+            return;
+        }
+        document.getElementById('emptyTxRow')?.remove();
 
         rows.forEach((tx) => {
 
@@ -529,20 +685,36 @@ async function autonomousTick() {
 
         renderPrediction(pred);
 
-        if (
-            pred.signal === "BUY" ||
-            pred.signal === "SELL"
-        ) {
-
-            await apiPost("/api/trade", {
-                ticker: pred.ticker,
-                signal_type: pred.signal,
-                price: pred.current_price,
-                shares: calcShares(pred.current_price)
-            });
-
-            await refreshPortfolio();
-            showToast(`Auto-trade executed: ${pred.signal} ${calcShares(pred.current_price)} shares of ${pred.ticker} @ $${pred.current_price}`, 'success');
+        if (pred.signal === "BUY" || pred.signal === "SELL") {
+            const shares = calcShares(pred.current_price);
+            try {
+                const tradeResult = await apiPost('/api/trade', {
+                    ticker: pred.ticker,
+                    signal_type: pred.signal,
+                    price: pred.current_price,
+                    shares: shares
+                });
+                
+                console.log('Auto-trade result:', tradeResult);
+                
+                if (tradeResult.success) {
+                    showToast(
+                        'Auto-trade: ' + pred.signal + ' ' + shares + 
+                        ' shares of ' + pred.ticker + 
+                        ' @ $' + pred.current_price, 
+                        'success'
+                    );
+                    await refreshPortfolio();
+                } else {
+                    showToast(
+                        'Auto-trade skipped: ' + tradeResult.message, 
+                        'warning'
+                    );
+                }
+            } catch(e) {
+                console.error('Auto-trade failed:', e);
+                showToast('Auto-trade error: ' + e.message, 'error');
+            }
         }
 
     } catch (error) {
@@ -676,118 +848,32 @@ async function runBacktest(ticker) {
 }
 
 function startEngine() {
-
     stopEngine();
-
-    if (getMode() !== "full") {
-        showToast(
-            "Switch to Fully Autonomous mode first.",
-            'info'
-        );
+    if (getMode() !== 'full') {
+        showToast('Switch to Fully Autonomous mode first.', 'info');
         return;
     }
-
-    state.engineInterval = setInterval(
-        autonomousTick,
-        30000
-    );
-
-    if (el.startEngineBtn) {
-        el.startEngineBtn.textContent = "Engine Running ●";
-        el.startEngineBtn.style.color = "green";
-    }
-
+    
+    state.engineInterval = setInterval(autonomousTick, 30000);
     autonomousTick();
+    
+    if (el.startEngineBtn) {
+        el.startEngineBtn.textContent = 'Engine Running ●';
+        el.startEngineBtn.style.color = '#16a34a';
+    }
+    showToast('Autonomous engine started', 'success');
 }
 
 function stopEngine() {
-
     if (state.engineInterval) {
-
         clearInterval(state.engineInterval);
         state.engineInterval = null;
     }
-
     if (el.startEngineBtn) {
-        el.startEngineBtn.textContent = "Start Engine";
-        el.startEngineBtn.style.color = "";
+        el.startEngineBtn.textContent = 'Start Engine';
+        el.startEngineBtn.style.color = '';
     }
 }
-
-el.loadStockBtn?.addEventListener(
-    "click",
-    () => loadStock(el.tickerInput.value)
-);
-
-el.tickerInput?.addEventListener(
-    "keydown",
-    (e) => {
-        if (e.key === "Enter") {
-            loadStock(el.tickerInput.value);
-        }
-    }
-);
-
-el.approveBtn?.addEventListener(
-    "click",
-    executeTradeFromPrediction
-);
-
-el.rejectBtn?.addEventListener(
-    "click",
-    () => {
-
-        state.latestPrediction = null;
-
-        el.predictionMeta.textContent =
-            "Prediction rejected.";
-
-        setSignalBadge("HOLD");
-    }
-);
-
-el.startEngineBtn?.addEventListener(
-    "click",
-    startEngine
-);
-
-el.modeSemi?.addEventListener("change", updateEngineButtonVisibility);
-el.modeFull?.addEventListener("change", updateEngineButtonVisibility);
-
-updateEngineButtonVisibility();
-
-el.stopEngineBtn?.addEventListener(
-    "click",
-    stopEngine
-);
-
-document.getElementById('refreshChartBtn')?.addEventListener('click', async () => {
-    if (!state.activeTicker) return;
-    try {
-        const chart = await apiGet(`/api/chart/${state.activeTicker}`);
-        renderChart(chart);
-        showToast('Chart refreshed', 'info');
-    } catch (error) {
-        console.error('Manual chart refresh failed:', error);
-        showToast('Chart refresh failed', 'error');
-    }
-});
-
-const savedTickers = localStorage.getItem('loadedTickers');
-const savedActive = localStorage.getItem('activeTicker');
-if (savedTickers) {
-    try {
-        const tickers = JSON.parse(savedTickers);
-        tickers.forEach((t) => state.loadedTickers.add(t));
-        renderTickerChips();
-        if (savedActive && state.loadedTickers.has(savedActive)) {
-            loadStock(savedActive);
-        }
-    } catch (e) {
-        localStorage.removeItem('loadedTickers');
-    }
-}
-
 
 async function checkDbStatus() {
     try {
@@ -803,7 +889,125 @@ async function checkDbStatus() {
     }
 }
 
-checkDbStatus();
+async function executeManualTrade(signalType) {
+    const ticker = activeChartTicker;
+    if (!ticker) {
+        showToast('No stock selected. Click a chart tab first.', 'info');
+        return;
+    }
+    
+    const sharesInput = document.getElementById('manualSharesInput');
+    const shares = Math.max(1, parseInt(sharesInput?.value) || 1);
+    const statusEl = document.getElementById('manualTradeStatus');
+    
+    // Get current price from latest prediction or chart data
+    let price = 0;
+    if (state.allPredictions && state.allPredictions[ticker]) {
+        price = state.allPredictions[ticker].current_price;
+    }
+    
+    if (!price || price <= 0) {
+        // Fetch current price from indicators endpoint
+        try {
+            const ind = await apiGet('/api/indicators/' + ticker);
+            price = ind.current_price;
+        } catch(e) {
+            showToast('Could not get current price for ' + ticker, 'error');
+            return;
+        }
+    }
+    
+    // Disable buttons during request
+    const buyBtn = document.getElementById('manualBuyBtn');
+    const sellBtn = document.getElementById('manualSellBtn');
+    if (buyBtn) buyBtn.disabled = true;
+    if (sellBtn) sellBtn.disabled = true;
+    if (statusEl) statusEl.textContent = 'Executing...';
+    
+    try {
+        const result = await apiPost('/api/trade', {
+            ticker: ticker,
+            signal_type: signalType,
+            price: price,
+            shares: shares
+        });
+        
+        if (result.success) {
+            if (statusEl) {
+                statusEl.textContent = 
+                    signalType + ' ' + shares + ' shares @ $' + 
+                    Number(price).toFixed(2) + ' executed';
+                statusEl.style.color = 
+                    signalType === 'BUY' ? '#16a34a' : '#dc2626';
+            }
+            showToast(
+                signalType + ' ' + shares + ' ' + ticker + 
+                ' @ $' + Number(price).toFixed(2), 
+                'success'
+            );
+            await refreshPortfolio();
+        } else {
+            if (statusEl) {
+                statusEl.textContent = result.message;
+                statusEl.style.color = '#dc2626';
+            }
+            showToast(result.message, 'error');
+        }
+    } catch(e) {
+        showToast('Trade failed: ' + e.message, 'error');
+        if (statusEl) statusEl.textContent = 'Trade failed';
+    } finally {
+        if (buyBtn) buyBtn.disabled = false;
+        if (sellBtn) sellBtn.disabled = false;
+    }
+}
 
+document.addEventListener('DOMContentLoaded', () => {
 
-refreshPortfolio();
+    el.startEngineBtn?.addEventListener(
+        "click",
+        startEngine
+    );
+
+    el.modeSemi?.addEventListener("change", updateEngineButtonVisibility);
+    el.modeFull?.addEventListener("change", updateEngineButtonVisibility);
+
+    updateEngineButtonVisibility();
+
+    el.stopEngineBtn?.addEventListener(
+        "click",
+        stopEngine
+    );
+
+    document.getElementById('refreshChartBtn')?.addEventListener('click', async () => {
+        if (!state.activeTicker) return;
+        try {
+            const chart = await apiGet(`/api/chart/${state.activeTicker}`);
+            renderChart(chart);
+            showToast('Chart refreshed', 'info');
+        } catch (error) {
+            console.error('Manual chart refresh failed:', error);
+            showToast('Chart refresh failed', 'error');
+        }
+    });
+
+    // Wire up logout and edit-portfolio buttons
+    document.getElementById('logoutBtn')?.addEventListener('click', async () => {
+        await apiPost('/api/auth/logout', {});
+        window.location.href = '/login';
+    });
+
+    document.getElementById('editPortfolioBtn')?.addEventListener('click', () => {
+        window.location.href = '/signup';
+    });
+
+    document.getElementById('manualBuyBtn')?.addEventListener(
+        'click', () => executeManualTrade('BUY')
+    );
+    document.getElementById('manualSellBtn')?.addEventListener(
+        'click', () => executeManualTrade('SELL')
+    );
+
+    checkDbStatus();
+    loadUserPortfolio();
+});
